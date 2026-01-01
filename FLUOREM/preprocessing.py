@@ -3,14 +3,14 @@
 #                               University of Heilbronn, Germany
 #2025-08-17 Description:        Preprocessing script for fluorescence- & reflection-data 
 #*******************************************************************************************************************
-# Diesses Skript liest alle Excel-Dateien ein und plottet diese, 
-# **auschließlich basierend** auf die vom Skript "Fluorem_v2.py" erstellten Excel-Dateien.
-# Dabei wird eine Feature-Matrix erstellt, die in einem separaten Skript für die ML-Modellierung verwendet werden kann.
+#This script reads and plots all Excel files,
+# **exclusively based** on the Excel files created by the script "Fluorem_v2.py".
+# A feature matrix is created which can be used in a separate script for machine learning modeling.
 #*******************************************************************************************************************
-# Wichtig: Es wird davon ausgegangen, dass die Excel-Dateien eine bestimmte Struktur haben:
+# Important: It is assumed that the Excel files have a specific structure:
 # 20250912-194600_P.224-990056_LIDL_extra virgin olive oil.xlsx
 #        ↑           ↑          ↑            ↑
-#    Timestamp | FLUOREM-Nr. | OilSource | OilType
+#    Timestamp | Device-No. | OilSource | OilType
 #*******************************************************************************************************************
 
 import pandas as pd
@@ -22,292 +22,293 @@ from matplotlib import colors as mcolors
 from scipy.signal import savgol_filter
 
 def preprocessing_fluor(input_dir: Union[str, Path], output_dir: Union[str, Path], sheet_name: str):
-    """Preprocessing der Fluoreszenz-Daten.
-    Liest alle Excel-Dateien im angegebenen Verzeichnis ein"""
+    """Preprocessing of fluorescence data.
+    Reads all Excel files in the specified directory."""
     
-    print("Starte Preprocessing_fluor...", flush=True)
+    print("Starting preprocessing_fluor...", flush=True)
 
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)  
               
-    # Alle Excel-Dateien lesen
+    # Read all Excel files
     file_paths = list(Path(input_dir).glob("*.xlsx"))
     if not file_paths:
-        raise FileNotFoundError("Keine .xlsx-Dateien im angegebenen Verzeichnis gefunden.")
+        raise FileNotFoundError("No .xlsx files were found in the specified directory.")
 
-    # Messwerte lesen, sowie Labels und Ölmarke/-hersteller aus Dateinamen extrahieren
+    # Read measured values ​​and extract labels and oil brand/manufacturer from file names
     observations = []
     labels = []
     sources = []
     for file_path in file_paths:
         try:
-            # Messwerte lesen
+            # Read measured values
             data = pd.read_excel(file_path, sheet_name=sheet_name)
             observations.append(data)
-            # Labels und Ölmarke/-hersteller aus Dateinamen extrahieren (alles nach dem letzten "_")
-            name = file_path.stem  # Dateiname ohne .xlsx
+            # extract labels and oil brand/manufacturer from file names (everything after the last "_")
+            name = file_path.stem  # Filename without .xlsx
             parts = name.split("_")
             if len(parts) >= 2:
-                labels.append(parts[-1])  # letzter Teil = Label --> Klassifizierung
-                sources.append(parts[-2])  # vorletzter Teil = Ölmarke/-hersteller
+                labels.append(parts[-1])  # last part = label --> classification
+                sources.append(parts[-2])  # penultimate/second from the last part = oil brand/manufacturer
             else:
                 labels.append("Unknown")
                 sources.append("Unknown")
         except Exception as e:
-            print(f"Fehler beim Lesen von {file_path.name}: {e}")
+            print(f"Error reading {file_path.name}: {e}")
 
-    # Wellenlängen extrahieren
-    wavelengths = observations[0].iloc[:, 1].values  # Spalte 2 = Wellenlänge
-    # Wavelengths separat speichern (für späteren Plot)
+    # Extract wavelengths
+    wavelengths = observations[0].iloc[:, 1].values  # Column 2 = Wavelength
+    # Save wavelengths separately (for later plotting)
     np.save(output_dir / "wavelengths.npy", wavelengths)
 
-    # Feature-Matrix initialisieren (NaN), maximale Anzahl an Zeilen = maxLength
-    #max_length = max(len(df) for df in observations)
-    max_length = len(observations[0])  # Annahme: alle Dateien haben gleiche Länge
+    # Initialize feature matrix (NaN), maximum number of rows = maxLength
+    # max_length = max(len(df) for df in observations)
+    max_length = len(observations[0])  # Assumption: all files have the same length
     feature_matrix = np.full(                       
-        (len(observations), max_length),  # Form: (rows: Anzahl_Spektren, columns: max_Anzahl_Wellenlängen)
-        np.nan                            # Initialwert: NaN
+        (len(observations), max_length),  # Form: (rows: number of spectra, columns: max number of wavelengths)
+        np.nan                            # Initial value: NaN
     )
-    # Preprocessing für jeden Datensatz
+    # Preprocessing for each data set
     for i, df in enumerate(observations):
-        s_values = df.iloc[:, 2].values     # Spalte 3 = Intensität        
-        if np.any(pd.isna(s_values)):       # NaN auffüllen (interpolieren)
+        s_values = df.iloc[:, 2].values     # Column 3 = Intensity        
+        if np.any(pd.isna(s_values)):       # Fill up (interpolate) NaN
             s_values = pd.Series(s_values).interpolate().bfill().ffill().values
 
-        # In feature_matrix einfügen    
+        # Insert into feature_matrix    
         feature_matrix[i, :len(s_values)] = s_values
-        # Wellenlängenbereich reduzieren für Training und Plot (VIS: 440-800nm, NIR: 1050-1850nm)
+        # Reduce wavelength range for training and plotting (VIS: 440-800nm, NIR: 1050-1850nm)
         if sheet_name == 'NIR':
             mask = (wavelengths >= 1050) & (wavelengths <= 1850)
         elif sheet_name == 'VIS':   
             mask = (wavelengths >= 440) & (wavelengths <= 800)
         else:
-            mask = np.ones_like(wavelengths, dtype=bool)  # kein Maskieren, alle Werte behalten
-        # Mask anwenden
-        feature_matrix[i, ~mask] = np.nan  # Werte außerhalb des Bereichs auf NaN setzen 
+            mask = np.ones_like(wavelengths, dtype=bool)  # no masking, keep all values
+        # Apply mask
+        feature_matrix[i, ~mask] = np.nan  # Set values outside the range to NaN
 
 
-    # Tabelle + Labels erstellen
+    # Create table + labels
     df_features = pd.DataFrame(feature_matrix)
-    df_features["OilType"] = pd.Categorical(labels) # Spalte "Oiltype" einfügen, als kategorische Variable
-    df_features["Source"] = pd.Categorical(sources) # Spalte "Source" einfügen, als kategorische Variable
+    df_features["OilType"] = pd.Categorical(labels) # Insert the column "Oiltype" as a categorical variable.
+    df_features["Source"] = pd.Categorical(sources) # Insert the column "Source" as a categorical variable.
 
-    # Speichern als Excel-Datei mit Dateinamen basierend auf Anregungsquelle
+    # Save as Excel file with filename based on suggestion source
     try:
-        # Nur einmal aus der ersten Datei den Wert holen
+        # Retrieve the value from the first file only once
         info_data = pd.read_excel(file_paths[0], sheet_name='Info')
         Anregungs_Wellenlaenge = str(info_data.iloc[2, 2])
     except Exception as e:
-        print(f"Fehler beim Auslesen der Wellenlänge aus {file_paths[0].name}: {e}")
+        print(f"Error reading wavelength from {file_paths[0].name}: {e}")
         Anregungs_Wellenlaenge = "unknown"
 
-    matrix_title = f"{sheet_name}-Fluoreszenz-Emissionsspektren Anregung@{Anregungs_Wellenlaenge}.xlsx"
+    matrix_title = f"{sheet_name}-Fluorescence-Emission-Spectra_Excitation@{Anregungs_Wellenlaenge}.xlsx"
     output_file = output_dir / matrix_title
     df_features.to_excel(output_file, index=False)
-    print(f"Preprocessing_fluor abgeschlossen. Datei gespeichert unter: {output_file}")
+    print(f"preprocessing_fluor completed. File saved to: {output_file}")
     
     return matrix_title, df_features
 
 def preprocessing_reflectance(input_dir: Union[str, Path], output_dir: Union[str, Path], sheet_name: str, apply_smoothing: bool = True):
-    """Preprocessing der Reflektanz-Daten.
-    Liest alle Excel-Dateien im angegebenen Verzeichnis ein, berechnet die Reflektanz (falls Referenz vorhanden),
-    erstellt eine Feature-Matrix und speichert diese als Excel-Datei."""
+    """Preprocessing of reflectance data.
+    Reads all Excel files in the specified directory, calculates the reflectance (if a reference exists),
+    creates a feature matrix, and saves it as an Excel file."""
     
-    print("Starte Preprocessing_reflectance...", flush=True)
+    print("Starting preprocessing_reflectance...", flush=True)
     
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
-    # Ordner erstellen, falls nicht vorhanden
+    # Create a folder if one does not already exist.
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    #Referenzdatei zur Berechnung der Reflektanz finden
-    # Referenzdatei (optional)
+    # Find reference file for calculating reflectance
+    # reference file (optional)
     ref_files = sorted(input_dir.glob("*_reference.xlsx"))
     ref_values = None
     if len(ref_files) == 0:
-        print("Keine Referenzdatei mit '_reference.xlsx' gefunden. Reflektion wird ohne Referenz berechnet.", flush=True)
+        print("No reference file with '_reference.xlsx' was found. Reflection is calculated without a reference.", flush=True)
     elif len(ref_files) > 1:
-        raise ValueError("Mehrere Referenzdateien gefunden. Bitte nur eine im Ordner lassen.")
+        raise ValueError("Multiple reference files found. Please leave only one in the folder.")
     else:
         ref_df = pd.read_excel(ref_files[0], sheet_name=sheet_name)
         if ref_df.shape[1] < 3:
-            raise ValueError(f"Referenzsheet hat weniger als 3 Spalten: {ref_files[0].name}")
-        # Referenz-Werte (digital counts) extrahieren
-        ref_values = ref_df.iloc[:, 2].values # 3.Spalte in Excel = digital Counts
-        print(f"Referenzdatei verwendet: {ref_files[0].name}", flush=True)
-        # Referenzwerte separat speichern (für späteren Plot)
+            raise ValueError(f"Reference sheet has less than 3 columns: {ref_files[0].name}")
+        # Extract reference values ​​(digital counts)
+        ref_values = ref_df.iloc[:, 2].values # 3rd column in Excel = digital counts
+        print(f"Reference file used: {ref_files[0].name}", flush=True)
+        # Save reference values separately (for later plotting)
         np.save(output_dir / "ref_values.npy", ref_values)
 
-    # Alle Excel-Dateien lesen
+    # Read all Excel files
     file_paths = list(Path(input_dir).glob("*.xlsx"))
     if not file_paths:
-        raise FileNotFoundError("Keine .xlsx-Dateien im angegebenen Verzeichnis gefunden.")
+        raise FileNotFoundError("No .xlsx files found in the specified directory.")
     # exclude reference file(s) from data file list
     if len(ref_files) == 1:
         data_files = [p for p in file_paths if p != ref_files[0]]
     else:
         data_files = file_paths.copy()
     if not data_files:
-        raise ValueError("Keine Messdateien gefunden.")
+        raise ValueError("No data files found.")
     
-    # Messwerte lesen, sowie Labels und Ölmarke/-hersteller aus Dateinamen extrahieren (alles nach dem letzten "_")
+    # Read measured values, and extract labels and oil brand/manufacturer from file names
     observations = []
     labels = []
     sources = []
     for file_path in data_files:
         try:
-            # Messwerte lesen
+            # Read measured values
             data = pd.read_excel(file_path, sheet_name=sheet_name)
             observations.append(data)
-            # Labels und Ölmarke/-hersteller aus Dateinamen extrahieren (alles nach dem letzten "_")
-            name = file_path.stem  # Dateiname ohne .xlsx
+            # extract labels and oil brand/manufacturer from file names (everything after the last "_")
+            name = file_path.stem  # Filename without .xlsx
             parts = name.split("_")
             if len(parts) >= 2:
-                labels.append(parts[-1])  # letzter Teil = Label
-                sources.append(parts[-2])  # vorletzter Teil = Ölmarke/-hersteller
+                labels.append(parts[-1])  # last part = label --> classification
+                sources.append(parts[-2])  # penultimate/second last part = oil brand/manufacturer
             else:
                 labels.append("Unknown")
                 sources.append("Unknown")
         except Exception as e:
-            print(f"Fehler beim Lesen von {file_path.name}: {e}")
+            print(f"Error reading {file_path.name}: {e}")
 
-    # Wellenlängen extrahieren
-    wavelengths = observations[0].iloc[:, 1].values  # Spalte 2 = Wellenlänge
-    # Wavelengths separat speichern (für späteren Plot)
+    # Extract wavelengths
+    wavelengths = observations[0].iloc[:, 1].values  # Column 2 = Wavelength
+    # Save wavelengths separately (for later plotting)
     np.save(output_dir / "wavelengths.npy", wavelengths)
 
-    # Feature-Matrix initialisieren (NaN), maximale Anzahl an Zeilen = maxLength
+    # Initialize feature matrix (NaN), maximum number of rows = max_length
     #max_length = max(len(df) for df in observations)
-    max_length = len(observations[0])  # Annahme: alle Dateien haben gleiche Länge
+    max_length = len(observations[0])  # assumption: all files have the same length
     feature_matrix = np.full((len(observations), max_length), np.nan)
 
-    # Preprocessing für jeden Datensatz
+    # Preprocessing for each dataset
     for i, df in enumerate(observations):
-        s_values = df.iloc[:, 2].values     # Spalte 3 = Intensität        
-        if np.any(pd.isna(s_values)):       # NaN auffüllen (interpolieren)
+        s_values = df.iloc[:, 2].values     # Column 3 = intensity
+        if np.any(pd.isna(s_values)):       # Fill NaNs (interpolate)
             s_values = pd.Series(s_values).interpolate().bfill().ffill().values
 
-        if len(ref_files) > 0:              # Nur wenn Referenzdatei existiert und passt 
+        if len(ref_files) > 0:              
+            # Only if a reference file exists and matches
             if len(s_values) != len(ref_values):    
-                raise ValueError(f"Unterschiedliche Länge in Datei: {data_files[i].name}")       
-            # *****Reflektanz berechnen: R(λ) = S(λ) / Ref(λ)*****
-            # Schutz gegen zu kleine Referenzwerte
-            min_ref = 10  # damit keine zu kleinen Werte in der Referenz sind --> Robuste Kurve
+                raise ValueError(f"Mismatched length in file: {data_files[i].name}")       
+            # *****Calculate reflectance: R(λ) = S(λ) / Ref(λ)*****
+            # Protect against very small reference values
+            min_ref = 10  # avoid too small reference values -> robust curve
             ref_values_safe = np.where(ref_values < min_ref, min_ref, ref_values)
             r_values = s_values / ref_values_safe
-            # Glättung der Reflektanzkurve mit Savitzky-Golay-Filter
+            # Smoothing of the reflectance curve with Savitzky-Golay filter
             if apply_smoothing:
                 # Parameter
-                window_length = 11  # ungerade Zahl, z. B. 11, 15, 21
-                polyorder = 2       # Grad des Polynoms
-                # Glättung anwenden
+                window_length = 11  # odd number, e.g. 11, 15, 21
+                polyorder = 2       # degree of the polynomial
+                # Apply filter
                 r_values_smooth = savgol_filter(r_values, window_length=window_length, polyorder=polyorder)
         else:
-            raise ValueError("Keine Referenzdatei gefunden. Reflektanz kann nicht berechnet werden.")
+            raise ValueError("No reference file found. Reflectance cannot be calculated.")
 
-        # In feature_matrix einfügen
+        # Insert into feature_matrix
         if apply_smoothing:
-            # verwendete geglättete Werte
+            # use smoothed values
             feature_matrix[i, :len(r_values_smooth)] = r_values_smooth
-        else:   
-            # Fallback auf unveränderte Reflektanzwerte     
+        else:
+            # fallback to unsmoothed reflectance values
             feature_matrix[i, :len(r_values)] = r_values
-        # Wellenlängenbereich reduzieren für Training und Plot (VIS: 440-800nm, NIR: 1050-1850nm)
+        # Reduce wavelength range for training and plotting (VIS: 440-800nm, NIR: 1050-1850nm)
         if sheet_name == 'NIR':
             mask = (wavelengths >= 1050) & (wavelengths <= 1850)
         elif sheet_name == 'VIS':   
             mask = (wavelengths >= 440) & (wavelengths <= 800) 
         else:
-            mask = np.ones_like(wavelengths, dtype=bool)  # kein Maskieren   
-        # Mask anwenden
-        feature_matrix[i, ~mask] = np.nan  # Werte außerhalb des Bereichs auf NaN setzen
+            mask = np.ones_like(wavelengths, dtype=bool)  # no masking
+        # Apply mask
+        feature_matrix[i, ~mask] = np.nan  # Set values outside the range to NaN
 
-    # Tabelle + Labels erstellen
+    # Create table + labels
     df_features = pd.DataFrame(feature_matrix)
-    df_features["OilType"] = pd.Categorical(labels) # Spalte "Oiltype" einfügen, als kategorische Variable
-    df_features["Source"] = pd.Categorical(sources) # Spalte "Source" einfügen, als kategorische Variable
+    df_features["OilType"] = pd.Categorical(labels) # Insert the "OilType" column as a categorical variable
+    df_features["Source"] = pd.Categorical(sources) # Insert the "Source" column as a categorical variable
 
-    # Speichern als Excel-Datei mit Dateinamen basierend auf Anregungsquelle
+    # Save as Excel file with filename based on excitation source
     try:
-        # Nur einmal aus der ersten Datei den Wert holen
+        # Retrieve the value from the first file only once
         info_data = pd.read_excel(data_files[0], sheet_name='Info')
         Anregungs_Wellenlaenge = str(info_data.iloc[2, 2])
     except Exception as e:
-        print(f"Fehler beim Auslesen der Wellenlänge aus {data_files[0].name}: {e}")
+        print(f"Error reading wavelength from {data_files[0].name}: {e}")
         Anregungs_Wellenlaenge = "unknown"
 
     matrix_title = f"{sheet_name}-Reflexionsspektren Anregung@{Anregungs_Wellenlaenge}.xlsx"
     output_file = output_dir / matrix_title
     df_features.to_excel(output_file, index=False)
-    print(f"Preprocessing_reflectance abgeschlossen. Datei gespeichert unter: {output_file}")
+    print(f"preprocessing_reflectance completed. File saved to: {output_file}")
 
     return matrix_title, df_features
 
 def get_nipy_spectral_colors(n):
-    cmap = plt.get_cmap("nipy_spectral")    # große Colormap mit vielen Farben
-    return [cmap(i / n) for i in range(n)]  # geeignet für wissenschaftliche Plots
+    cmap = plt.get_cmap("nipy_spectral")    # large colormap with many colors
+    return [cmap(i / n) for i in range(n)]  # suitable for scientific plots
 
 def plot_matrix(matrix: pd.DataFrame, title: str, output_dir: Path = None, figsize=(20,12), excludeOiltype: Union[str, list, tuple, set] = "data_1", excludeSource: Union[str, list, tuple, set] = "data_2"):
-    print("Starte Plotting...", flush=True)
-    #***Daten vorbereiten für Plot*** 
-    # Wellenlängen für die Werte der x-Achse des Plots laden
+    print("Starting plotting...", flush=True)
+    #***Prepare data for plotting*** 
+    # Load wavelengths for the x-axis values
     wavelengths = None
     if output_dir is not None:
         if (output_dir / "wavelengths.npy").exists():
             wavelengths = np.load(output_dir / "wavelengths.npy")
-            print(f"Wellenlängen aus 'wavelengths.npy' geladen.\n", flush=True)
+            print(f"Wavelengths loaded from 'wavelengths.npy'.\n", flush=True)
         elif (output_dir / "VIS_wavelengths.npy").exists():
             wavelengths = np.load(output_dir / "VIS_wavelengths.npy")
-            print(f"Wellenlängen aus 'VIS_wavelengths.npy' geladen.\n", flush=True)
+            print(f"Wavelengths loaded from 'VIS_wavelengths.npy'.\n", flush=True)
         elif (output_dir / "NIR_wavelengths.npy").exists():
             wavelengths = np.load(output_dir / "NIR_wavelengths.npy")
-            print(f"Wellenlängen aus 'NIR_wavelengths.npy' geladen.\n", flush=True)
+            print(f"Wavelengths loaded from 'NIR_wavelengths.npy'.\n", flush=True)
         else:
-            print(f"Wellenlängen konnten nicht geladen werden. Fallback auf Pixelindex.\n", flush=True)
+            print(f"Wavelengths could not be loaded. Falling back to pixel index.\n", flush=True)
 
-    #%% Ausschließen bestimmter Öltypen oder Quellen, falls angegeben
-    # Zuerst Öltypen ausschließen, falls angegeben
+    #%% Exclude specific oil types or sources if specified
+    # First exclude oil types if provided
     if excludeOiltype is None:
         exclude_set = set()
     elif isinstance(excludeOiltype, (list, tuple, set)):
         exclude_set = set(excludeOiltype)
     else:
-        raise TypeError("exclude must be None, list, tuple, or set") # entweder leer lassen oder Liste/Tupel/Set übergeben
-    # Maske für Zeilen, die nicht ausgeschlossen werden sollen
+        raise TypeError("exclude must be None, list, tuple, or set") # either leave empty or pass a list/tuple/set
+    # Mask for rows that should not be excluded
     mask = ~matrix["OilType"].isin(exclude_set)
 
-    # Danach Ölmarken/-hersteller ausschließen, falls angegeben
+    # Then exclude oil brands/manufacturers if provided
     if excludeSource is None:
         exclude_set = set()
     elif isinstance(excludeSource, (list, tuple, set)):
         exclude_set = set(excludeSource)
     else:
-        raise TypeError("exclude must be None, list, tuple, or set") # entweder leer lassen oder Liste/Tupel/Set übergeben
-    # mask erweitern/aktualisieren mit mask &= ~...
+        raise TypeError("exclude must be None, list, tuple, or set") # either leave empty or pass a list/tuple/set
+    # update mask with mask &= ~...
     mask &= ~matrix["Source"].isin(excludeSource)
-    # Gefilterte Matrix erstellen
+    # Create filtered matrix
     matrix = matrix.loc[mask].reset_index(drop=True)
 
-    #%% Daten für Plot extrahieren
-    features = matrix.drop(columns=["OilType","Source"]).T   #erst Ölklassen und Ölmarken entfernen, danach transponieren für Plot
+    #%% Extract data for plotting
+    features = matrix.drop(columns=["OilType","Source"]).T   # remove oil types and brands, then transpose for plotting
     if wavelengths is None:
-        wavelengths = np.arange(features.shape[0])  # Wenn wavelengths-Datei nicht vorhanden, generiere Pixel-Indizes nach Anzahl der Zeilen von features
-    labels = matrix["OilType"].values  #Ölklassen extrahieren für Legende
-    sources = matrix["Source"].values  #Ölmarke/-hersteller extrahieren für Farbcodierung
-    unique_sources = np.unique(sources)# eindeutige Ölmarken/-hersteller für die Legende und Farbcodierung      
+        wavelengths = np.arange(features.shape[0])  # If wavelengths file is missing, generate pixel indices by number of rows in features
+    labels = matrix["OilType"].values  # extract oil types for legend
+    sources = matrix["Source"].values  # extract oil brands/manufacturers for color coding
+    unique_sources = np.unique(sources)  # unique brands for legend and color mapping      
 
-    #%% Farben für Ölmarken/-hersteller definieren
-    # Jeder Ölmarke Farbe zuweisen
-    #colors = list(mcolors.TABLEAU_COLORS.values()) # 10 verschiedene kräftige Farben
-    colors = get_nipy_spectral_colors(len(unique_sources))  # größere Colormap für mehr Farben, falls mehr Ölmarken vorhanden
+    #%% Define colors for oil brands/manufacturers
+    # Assign a color to each brand
+    #colors = list(mcolors.TABLEAU_COLORS.values()) # 10 distinct strong colors
+    colors = get_nipy_spectral_colors(len(unique_sources))  # larger colormap for more brands
     color_map = {source: colors[i] for i, source in enumerate(sorted(unique_sources))}
     
-    #%% Plot erstellen
+    #%% Create plot
     plt.figure(figsize=figsize)
-    # Alle Proben plotten, farblich nach Ölmarke/-hersteller, linienstil nach Ölklasse
-    seen = set() # um doppelte Legenden-Einträge zu vermeiden in dieser for-Schleife
-    # Die Listen-Datentyp set() speichert Elemente ohne Duplikate; ansonsten wie eine normale Liste
+    # Plot all samples, colored by brand/manufacturer, line style by oil class
+    seen = set() # to avoid duplicate legend entries in this loop
+    # The set() type stores elements without duplicates; otherwise behaves like a list
     for i in range(features.shape[1]):
         oil_type = labels[i]
         source = sources[i]
@@ -317,11 +318,11 @@ def plot_matrix(matrix: pd.DataFrame, title: str, output_dir: Path = None, figsi
             label = f"{oil_type} ({source})"
             seen.add(key)
         else:
-            label = None  # kein Label für doppelte Einträge
+            label = None  # no label for duplicate entries
         plt.plot(wavelengths, features.iloc[:, i], color=color,
                 alpha=0.8 if label else 0.5, label=label)
         
-    # Plot-Details
+    # Plot details
     plt.xlabel("Wavelength [nm]")
     if "Fluoreszenz" in title:
         plt.xlabel("Wavelength [nm]", fontsize=20)
@@ -335,13 +336,13 @@ def plot_matrix(matrix: pd.DataFrame, title: str, output_dir: Path = None, figsi
         else:
             plotTitle = "Fluorescence Emission Spectrum"
         plt.title(plotTitle, fontsize=24)
-        # x-Achse je nach VIS/NIR einschränken
+        # limit x-axis depending on VIS/NIR
         if "VIS" in title:
-            plt.xlim(440, 800)  # VIS im Bereich 440-800nm
+            plt.xlim(440, 800)  # VIS range 440-800nm
         elif "NIR" in title:
-            plt.xlim(1000, 1850) # NIR im Bereich 1000-1900nm
+            plt.xlim(1000, 1850) # NIR range 1000-1900nm
         else:
-            plt.xlim(np.min(wavelengths), np.max(wavelengths)) # gesamter Wellenlängenbereich
+            plt.xlim(np.min(wavelengths), np.max(wavelengths)) # entire wavelength range
     elif "Reflexion" or "lamp" or "average" in title:
         plt.xlabel("Wavelength [nm]", fontsize=20)
         plt.ylabel("Reflectance", fontsize=20)
@@ -353,84 +354,82 @@ def plot_matrix(matrix: pd.DataFrame, title: str, output_dir: Path = None, figsi
             plotTitle = "spectrum"
         plt.title(plotTitle, fontsize=24)
         plt.ylabel("Reflectance")
-        # Wenn Reflektanz berechnet wurde (was mit kleinen y-Werte erfassbar ist), y-Achse entsprechend setzen
-        plt.ylim(0, 2)  # Reflektanz üblicherweise zwischen 0 und 2
+        # If reflectance was calculated (detectable by small y-values), set y-axis accordingly
+        plt.ylim(0, 2)  # Reflectance typically between 0 and 2
         if "VIS" in title:
-            plt.xlim(440, 800)  # VIS im Bereich 440-800nm
+            plt.xlim(440, 800)  # VIS range 440-800nm
         elif "NIR" in title:
-            plt.xlim(1050, 1850) # NIR im Bereich 1000-1850nm
+            plt.xlim(1050, 1850) # NIR range 1000-1850nm
         else:
-            plt.xlim(np.min(wavelengths), np.max(wavelengths)) # gesamter Wellenlängenbereich
+            plt.xlim(np.min(wavelengths), np.max(wavelengths)) # full wavelength range
     else:
         plt.ylabel("Intensity (Counts)", fontsize=20)
         plt.xlabel("Wavelength [nm]", fontsize=20)
-        plt.xlim(np.min(wavelengths), np.max(wavelengths)) # gesamter Wellenlängenbereich
+        plt.xlim(np.min(wavelengths), np.max(wavelengths)) # full wavelength range
     plt.grid(True, which='both', linestyle='--', linewidth=0.5)
     plt.tick_params(axis='both', labelsize=16)
 
-    # Legende:
+    # Legend:
     plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=18)
     # Plot speichern
     save_basename = Path(title).stem if title else "matrix_plot"
     save_name = f"{save_basename}_plot.png"
     if output_dir is not None:
         plt.savefig(output_dir / save_name, bbox_inches='tight')
-        #bbox_inches='tight' sorgt dafür, dass die Legende nicht abgeschnitten wird
+        # bbox_inches='tight' ensures the legend is not cut off
     else:
         plt.savefig("matrix_plot", bbox_inches='tight')
     plt.close()
 
-    print(f"Plotting abgeschlossen. Datei gespeichert unter: {output_dir}")
+    print(f"Plotting completed. File saved to: {output_dir}")
 
 if __name__ == "__main__":
-    #%% Reflectance
-    # Reflectance VIS
+    #%% Reflectance examples
+    # Reflectance VIS example (uncomment and set paths to run)
     #input_dir = Path(r"C:\Users\korkm\Desktop\5.Sem (Master-Thesis)\Thesis\Messungen\lamp\Zeliva\meas5")
     #output_dir = Path(r"C:\Users\korkm\Desktop\5.Sem (Master-Thesis)\Thesis\Messungen\lamp\Zeliva\meas5\preprocessed_VIS\Savitzky-Golay-Filter")
-    # preprocessing_reflectance durchführen und den erzeugten Dateinamen erhalten
+    # Run preprocessing_reflectance and get the generated filename
     #matrix_title, matrix = preprocessing_reflectance(input_dir, output_dir, sheet_name='VIS', apply_smoothing=True)
-    #matrix_stem = Path(matrix_title).stem  # Nur der Name ohne .xlsx
+    #matrix_stem = Path(matrix_title).stem  # name without .xlsx
     #plot_matrix(matrix=matrix, title=matrix_stem, output_dir=output_dir, figsize=(20,12), 
     #            excludeOiltype=["reference"], 
     #            excludeSource=[])
 
-    # Reflectance NIR
+    # Reflectance NIR example
     #input_dir = Path(r"C:\Users\korkm\Desktop\5.Sem (Master-Thesis)\Thesis\Messungen\lamp\80 refined - 20 extra native\new\meas4")
     #output_dir = Path(r"C:\Users\korkm\Desktop\5.Sem (Master-Thesis)\Thesis\Messungen\lamp\Zeliva\meas5\preprocessed_NIR\Savitzky-Golay-Filter")
-    # preprocessing_reflectance durchführen und den erzeugten Dateinamen erhalten
+    # Run preprocessing_reflectance and get the generated filename
     #matrix_title, matrix = preprocessing_reflectance(input_dir, output_dir, sheet_name='NIR', apply_smoothing=True)
-    #matrix_stem = Path(matrix_title).stem  # Nur der Name ohne .xlsx
+    #matrix_stem = Path(matrix_title).stem  # name without .xlsx
     #plot_matrix(matrix=matrix, title=matrix_stem, output_dir=output_dir, figsize=(20,12), 
     #            excludeOiltype=["reference"], 
     #            excludeSource=[])
-    #%% Fluorescence
-    # preprocessing_fluor
+    #%% Fluorescence examples
+    # Run preprocessing_fluor
     #input_dir = Path(r"C:\Users\korkm\Desktop\5.Sem (Master-Thesis)\Thesis\Messungen\lamp\lamp_allData\VIS")
     #output_dir = Path(r"C:\Users\korkm\Desktop\5.Sem (Master-Thesis)\Thesis\Messungen\lamp\lamp_allData_matrix\VIS\Vegetable oils\fix")
 
     #matrix_title, matrix = preprocessing_fluor(input_dir, output_dir, sheet_name='VIS')
     #matrix_title, _ = preprocessing_fluor(input_dir, output_dir, sheet_name='NIR')
-    #%% Matrix plotten
-    # Datei laden und plotten (keine zweite Ausführung von preprocessing)
-    # 'matrix' kommt bereits von preprocessing_fluor, kein erneutes Lesen nötig
-    # (falls du aus einer separaten Sitzung startest, dann stattdessen pd.read_excel verwenden)
+    #%% Plot a saved matrix
+    # Load file and plot (do not run preprocessing again)
+    # 'matrix' may already come from preprocessing_fluor; otherwise use pd.read_excel
     #matrix = pd.read_excel(output_dir / "lamp_VIS_classification_matrix.xlsx")
-    #matrix_stem = Path(matrix_title).stem  # Nur der Name ohne .xlsx
+    #matrix_stem = Path(matrix_title).stem  # name without .xlsx
     #plot_matrix(matrix=matrix, title="lamp_VIS_classification_matrix.xlsx", output_dir=output_dir, figsize=(20,12), 
     #            excludeOiltype=["reference","extra virgin olive oil","refined olive oil","refined olive-pomace oil","olive-pomace oil","blend","out-of-class"], 
     #            excludeSource=[])
     
-    #excludeOiltype=["reference","extra virgin olive oil","refined olive oil","refined olive-pomace oil","olive-pomace oil","sunflower oil","rapeseed oil","out-of-class"], --> Nur Blends
-    #excludeOiltype=["reference","extra virgin olive oil","refined olive oil","refined olive-pomace oil","olive-pomace oil","blend","out-of-class"], --> Nur pflanlzliche Öle
-    #excludeOiltype=["reference","extra virgin olive oil","refined olive oil","refined olive-pomace oil","olive-pomace oil","blend","sunflower oil","rapeseed oil"], --> Nur out-of-class Öle
-    #excludeOiltype=["reference","blend","sunflower oil","rapeseed oil","out-of-class"], --> Nur pure Olivenöle
+    # Examples for excludeOiltype filters (German comments converted):
+    #excludeOiltype=["reference","extra virgin olive oil","refined olive oil","refined olive-pomace oil","olive-pomace oil","sunflower oil","rapeseed oil","out-of-class"], --> Only blends
+    #excludeOiltype=["reference","extra virgin olive oil","refined olive oil","refined olive-pomace oil","olive-pomace oil","blend","out-of-class"], --> Only vegetable oils
+    #excludeOiltype=["reference","extra virgin olive oil","refined olive oil","refined olive-pomace oil","olive-pomace oil","blend","sunflower oil","rapeseed oil"], --> Only out-of-class oils
+    #excludeOiltype=["reference","blend","sunflower oil","rapeseed oil","out-of-class"], --> Only pure olive oils
 
-    #excludeSource=[] --> Alle Quellen/Marken anzeigen
-    # Blends 1
+    #excludeSource=[] --> Show all sources/brands
+    # Blend examples
     #excludeSource=["V2-20pct refined–80pct extra native","V2-50pct refined–50pct extra native","V2-80pct refined–20pct extra native","V3-20pct refined–80pct extra native","V3-50pct refined–50pct extra native","V3-80pct refined–20pct extra native"]
-    # Blends 2
     #excludeSource=["20pct refined–80pct extra native","50pct refined–50pct extra native","80pct refined–20pct extra native","V3-20pct refined–80pct extra native","V3-50pct refined–50pct extra native","V3-80pct refined–20pct extra native"]
-    # Blends 3
     #excludeSource=["20pct refined–80pct extra native","50pct refined–50pct extra native","80pct refined–20pct extra native","V2-20pct refined–80pct extra native","V2-50pct refined–50pct extra native","V2-80pct refined–20pct extra native"]
 
     output_dir_VIS = Path(r"C:\Users\korkm\Desktop\5.Sem (Master-Thesis)\Thesis\Messungen\lamp\lamp_Savitzky-Golay-Filter_allData_matrix\VIS")
